@@ -65,7 +65,7 @@ isValidEmail <- function(x) {
 }
 
 
-ui <- semanticPage(
+ui <- semanticPage(theme = 'superhero',
     title = "Bump",
     useShinyjs(),
     flow_layout(row_gap = "30px", cell_width = '100%',
@@ -75,7 +75,7 @@ ui <- semanticPage(
             'To see a familiar face walking from the train station or waiting for a coffee?'
             )
         ),
-      split_layout(cell_widths = c("15%", "50%", "20%", "15%"), cell_args = "padding: 10px;",
+      split_layout(cell_widths = c("15%", "50%", "20%", "15%"), cell_args = "padding: 10px;", style = 'background-color: #2b3e50;',
                    div(),
                    segment(
                        form(
@@ -178,13 +178,13 @@ server <- function(input, output, session) {
             
             
             ## render an example message
-            # get fake person
+            # get fake person as bump_ed
             person <- people %>%
               filter(status == 'fake') %>%
               pull(person) %>%
               sample(., 1)
             
-            output$activity_output <- renderText(glue::glue(scn))
+            output$activity_who <- renderText(glue::glue(scn))
             
             
           } else {
@@ -208,16 +208,19 @@ server <- function(input, output, session) {
           filter(email == input$email) 
         
         bump_ed <- people %>%
-          filter(email != input$email)
-          filter(grepl(bump_ee$bump_prefs, bump_prefs)) %>%
+          filter(email != input$email) %>% # don't bump into yourself
+          dplyr::filter(grepl(bump_ee$bump_prefs, input$preferences)) %>% # bump into someone with your current interests
           sample_n(1)
         
         person <- bump_ed %>%
           pull(person)
         
-        activity <- intersect(unlist(str_split(bump_ee$bump_prefs, '\\|')),
-                              unlist(str_split(bump_ed$bump_prefs, '\\|'))) %>%
-          sample(., 1)
+        # maybe remove this activity is defined by the user (can user not select preference and be surprised???)
+        # activity <- intersect(unlist(str_split(bump_ee$bump_prefs, '\\|')),
+        #                       unlist(str_split(bump_ed$bump_prefs, '\\|'))) %>%
+        #   sample(., 1)
+        activity <- input$preferences
+        # add option to better define activity bsed on chosen preference
         
         bump_transact <- data.frame(bump_ee = bump_ee %>% pull(id),
                                     bump_ed = bump_ed %>% pull(id),
