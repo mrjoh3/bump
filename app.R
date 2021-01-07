@@ -1,16 +1,27 @@
 library(shiny)
 library(shiny.semantic)
 library(shinyjs)
+library(shinyalert)
 library(randomNames)
 library(purrr)
 library(DBI)
 library(pool)
 library(glue)
 library(dplyr)
+library(dbplyr)
+library(stringr)
+library(hashids)
+library(lubridate)
 
 
 # setup db connection
-con <- # define DB connection here
+con <- dbPool(
+  drv = RPostgreSQL::PostgreSQL(),
+  dbname = "gisdata",
+  host = 'intel.int.epa.vic.gov.au',
+  user = "gisuser",
+  password = keyring::key_get('RStudio Keyring Secrets', username = 'pg_gisuser')
+)
 
 # close db connection on exit
 onStop(function() {
@@ -19,6 +30,14 @@ onStop(function() {
 })
 
 ACTIVITY_OPTIONS <- c('Coffee', 'Chat', 'Lunch', 'Walk')
+
+## get a background image from unsplash
+
+unsplash <- glue::glue("https://api.unsplash.com/photos/random?query=faces&orientation=portrait&client_id={Sys.getenv()[['unsplash_access']]}") %>%
+  httr::GET() %>%
+  content()
+
+img_url <- unsplash$urls$full
 
 ## check / create required tables (this should only run once)
 
@@ -65,19 +84,20 @@ isValidEmail <- function(x) {
 }
 
 
-ui <- semanticPage(theme = 'superhero',
+ui <- semanticPage(theme = 'darkly',
     title = "Bump",
     useShinyjs(),
+    useShinyalert(),
     flow_layout(row_gap = "30px", cell_width = '100%',
         div(
-          h1('Bump Me'),
-          p('Do you remember what is was like to bump into someone in the office? ',
-            'To see a familiar face walking from the train station or waiting for a coffee?'
-            )
+          h1('Bump Me')
         ),
-      split_layout(cell_widths = c("15%", "50%", "20%", "15%"), cell_args = "padding: 10px;", style = 'background-color: #2b3e50;',
-                   div(),
-                   segment(
+      split_layout(cell_widths = c("35%", "40%", "15%", "10%"), cell_args = "padding: 10px;", style = 'background-image: linear-gradient(to right, #222, #222, #2b3e50);',
+                   div(tags$img(src = img_url, 
+                                alt = "A New Face",
+                                style = 'max-width: 120%; max-height: 120%;')),
+                   div(style = "padding-top:50px;",
+                     segment(style = 'margin:5px;border-filter: blur(3px);', # not working
                        form(
                            h4(class = "ui dividing header", "Inputs"),
                            field(
@@ -117,10 +137,12 @@ ui <- semanticPage(theme = 'superhero',
                            field(
                                #tags$label(),
                                action_button('submit', 'BUMP', width = '100%')
-                           ))),
+                           )))),
                    div(
                        h3('Instructions'),
-                       p('loads of text')
+                       p('Do you remember what is was like to bump into someone in the office? ',
+                         'To see a familiar face walking from the train station or waiting for a coffee?'
+                       )
                    ),
                    div()
       ),
@@ -137,7 +159,9 @@ server <- function(input, output, session) {
     people <<- dbReadTable(con, 'bump_person')
     scenarios <<- dbReadTable(con, 'bump_scenario')
     
-
+    recent_transact <- tbl(con, 'bump_transact') %>%
+      filter(timestamp > local(Sys.Date() - days(7))) %>%
+      collect()
     
     observeEvent(input$submit, {
       
@@ -150,6 +174,7 @@ server <- function(input, output, session) {
           
           # modal looks like you already exist
           print('persons already exists')
+          shinyalert::shinyalert('Hello Again', 'It looks like you have registered here before?')
           
         } else {
           
@@ -191,6 +216,7 @@ server <- function(input, output, session) {
             
             # modal email does not appear to be correct format
             print('fix email address')
+            shinyalert::shinyalert('Woops!', 'Please double check your email and try again')
             
           }
           
@@ -209,28 +235,42 @@ server <- function(input, output, session) {
         
         bump_ed <- people %>%
           filter(email != input$email) %>% # don't bump into yourself
-          dplyr::filter(grepl(bump_ee$bump_prefs, input$preferences)) %>% # bump into someone with your current interests
+          filter(!(id %in% recent_transact$bump_ed)) %>% # exclude users recently bumped
+          dplyr::filter(grepl(input$preferences, bump_prefs)) %>% # bump into someone with your current interests
           sample_n(1)
+        # bump_ed <- people %>%
+        #   filter(email != 'matthew.johnson@epa.vic.gov.au') %>% # don't bump into yourself
+        #   filter(!(id %in% recent_transact$bump_ed)) %>% # exclude users recently bumped
+        #   dplyr::filter(grepl('Lunch', bump_prefs)) %>% # bump into someone with your current interests
+        #   sample_n(1)
         
-        person <- bump_ed %>%
-          pull(person)
-        
-        # maybe remove this activity is defined by the user (can user not select preference and be surprised???)
-        # activity <- intersect(unlist(str_split(bump_ee$bump_prefs, '\\|')),
-        #                       unlist(str_split(bump_ed$bump_prefs, '\\|'))) %>%
-        #   sample(., 1)
-        activity <- input$preferences
-        # add option to better define activity bsed on chosen preference
-        
-        bump_transact <- data.frame(bump_ee = bump_ee %>% pull(id),
-                                    bump_ed = bump_ed %>% pull(id),
-                                    activity = activity,
-                                    timestamp = Sys.time())
-        
-        output$activity_who <- renderText(glue::glue(scn))
-        output$activity_what <- renderText(glue::glue("Why don't you invite them for {activity}"))
-        
-        dbWriteTable(con, 'bump_transact', bump_transact, append = TRUE, row.names = FALSE)
+        if (nrow(bump_ed) > 0) {
+          
+          person <- bump_ed %>%
+            pull(person)
+          
+          # maybe remove this activity is defined by the user (can user not select preference and be surprised???)
+          # activity <- intersect(unlist(str_split(bump_ee$bump_prefs, '\\|')),
+          #                       unlist(str_split(bump_ed$bump_prefs, '\\|'))) %>%
+          #   sample(., 1)
+          activity <- input$preferences
+          # add option to better define activity bsed on chosen preference
+          
+          bump_transact <- data.frame(bump_ee = bump_ee %>% pull(id),
+                                      bump_ed = bump_ed %>% pull(id),
+                                      activity = activity,
+                                      timestamp = Sys.time())
+          
+          output$activity_who <- renderText(glue::glue(scn))
+          output$activity_what <- renderText(glue::glue("Why don't you invite them for {activity}"))
+          
+          dbWriteTable(con, 'bump_transact', bump_transact, append = TRUE, row.names = FALSE)
+          
+        } else {
+          
+          shinyalert::shinyalert('Oh No!', glue::glue('It looks like no one is available for a {input$preferences}'))
+          
+        }
         
       }
 
